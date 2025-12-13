@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIGNAL ANALYSIS TERMINAL</title>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg: #050505;
+            --fg: #00ff00; /* Oscilloscope Green */
+            --dim: #004400;
+            --font: 'JetBrains Mono', monospace;
+        }
+
+        body { 
+            margin: 0; overflow: hidden; 
+            background-color: var(--bg); 
+            font-family: var(--font); 
+            color: var(--fg);
+            user-select: none;
+        }
+        
+        canvas { display: block; }
+
+        /* --- UI GRID --- */
+        #ui-grid {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none;
+            display: grid;
+            grid-template-columns: 250px 1fr 250px;
+            grid-template-rows: 60px 1fr 60px;
+            padding: 20px; box-sizing: border-box;
+            z-index: 10;
+        }
+
+        /* METERS */
+        .meter-container {
+            border: 1px solid var(--dim);
+            background: rgba(0, 20, 0, 0.8);
+            padding: 10px;
+            display: flex; flex-direction: column; gap: 5px;
+            pointer-events: auto;
+        }
+
+        .label { font-size: 10px; color: var(--fg); opacity: 0.7; text-transform: uppercase; }
+        .value { font-size: 14px; font-weight: 700; margin-bottom: 5px; }
+        
+        /* Bar Meters */
+        .bar-bg { width: 100%; height: 6px; background: var(--dim); position: relative; }
+        .bar-fill { height: 100%; background: var(--fg); width: 0%; transition: width 0.05s linear; }
+
+        /* Correlation Meter */
+        .corr-scale { 
+            display: flex; justify-content: space-between; 
+            font-size: 8px; opacity: 0.5; margin-top: 2px;
+        }
+        .corr-marker {
+            width: 2px; height: 100%; background: #fff; position: absolute; left: 50%; top: 0;
+            transform: translateX(-50%); z-index: 2;
+        }
+
+        /* DROP ZONE */
+        #drop-overlay {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.8);
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            z-index: 50; pointer-events: auto; cursor: pointer;
+        }
+        #drop-overlay.hidden { display: none; }
+        
+        .drop-box {
+            border: 2px solid var(--fg); padding: 40px;
+            text-align: center; background: #001100;
+        }
+        .drop-box:hover { background: #002200; }
+
+        /* UTILS */
+        .mono-font { font-family: 'JetBrains Mono', monospace; }
+        button {
+            background: var(--dim); border: 1px solid var(--fg); color: var(--fg);
+            padding: 5px 10px; font-family: var(--font); font-size: 10px;
+            cursor: pointer; text-transform: uppercase; margin-top: 5px;
+        }
+        button:hover { background: var(--fg); color: var(--bg); }
+
+    </style>
+    <!-- THREE.js -->
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+</head>
+<body>
+
+    <!-- UI LAYER -->
+    <div id="ui-grid">
+        <!-- TOP LEFT: METRICS -->
+        <div class="meter-container" style="grid-column: 1; grid-row: 1 / 3;">
+            <div class="label">RMS LEVEL (dBFS)</div>
+            <div class="value" id="val-db">-inf dB</div>
+            
+            <div class="label" style="margin-top: 10px;">L Channel</div>
+            <div class="bar-bg"><div id="bar-l" class="bar-fill"></div></div>
+            
+            <div class="label" style="margin-top: 5px;">R Channel</div>
+            <div class="bar-bg"><div id="bar-r" class="bar-fill"></div></div>
+
+            <div style="margin-top: 20px; border-top: 1px solid var(--dim); padding-top: 10px;">
+                <div class="label">PHASE CORRELATION</div>
+                <div class="value" id="val-corr">+1.00</div>
+                <!-- Correlation Bar: Center is 0, Left is -1, Right is +1 -->
+                <div class="bar-bg" style="height: 10px;">
+                    <div class="corr-marker" id="corr-marker"></div>
+                    <div style="position: absolute; left: 50%; height: 100%; width: 1px; background: #555;"></div>
+                </div>
+                <div class="corr-scale"><span>-1 (PHASE)</span><span>0 (WIDE)</span><span>+1 (MONO)</span></div>
+            </div>
+
+            <div style="margin-top: 20px; border-top: 1px solid var(--dim); padding-top: 10px;">
+                <div class="label">STEREO WIDTH</div>
+                <div class="value" id="val-width">0%</div>
+            </div>
+            
+            <button id="btn-mic" style="margin-top: auto;">ACTIVATE MIC</button>
+            <button id="btn-reset" onclick="location.reload()">RESET SYSTEM</button>
+        </div>
+
+        <!-- TOP RIGHT: SPECTRUM -->
+        <!-- Just a label, the visual is 3D -->
+        <div style="grid-column: 3; text-align: right; opacity: 0.5; font-size: 10px;">
+            <div class="label">VECTORSCOPE / GONIOMETER</div>
+            <div>X = SIDE (L-R)</div>
+            <div>Y = MID (L+R)</div>
+        </div>
+    </div>
+
+    <!-- DRAG DROP -->
+    <div id="drop-overlay" onclick="document.getElementById('file-input').click()">
+        <div class="drop-box">
+            <div style="font-size: 20px; font-weight: 700;">INITIALIZE ANALYZER</div>
+            <div style="font-size: 12px; margin-top: 10px; opacity: 0.7;">CLICK OR DRAG AUDIO FILE</div>
+        </div>
+        <input type="file" id="file-input" accept="audio/*" style="display:none;">
+    </div>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        // --- CONFIG ---
+        const SAMPLES = 4096; // Resolution of the scope
+        
+        // --- GLOBALS ---
+        let scene, camera, renderer;
+        let scopeGeometry, scopePoints; // The Vectorscope Cloud
+        let audioContext, sourceNode;
+        let analyserL, analyserR; // Stereo analysis requires two nodes
+        let dataL, dataR;
+        let isRunning = false;
+
+        initGraphics();
+        setupInteraction();
+        animate();
+
+        function initGraphics() {
+            const container = document.createElement('div');
+            document.body.appendChild(container);
+
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x050505);
+
+            // Orthographic Camera for precision 2D plotting
+            const aspect = window.innerWidth / window.innerHeight;
+            const frustumSize = 2; // Keep scale manageable -1 to 1
+            camera = new THREE.OrthographicCamera(
+                -frustumSize * aspect, frustumSize * aspect, 
+                frustumSize, -frustumSize, 
+                0.1, 100
+            );
+            camera.position.z = 10;
+
+            renderer = new THREE.WebGLRenderer({ antialias: false });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            // --- VECTORSCOPE GEOMETRY ---
+            // A cloud of points that we update every frame
+            const positions = new Float32Array(SAMPLES * 3);
+            scopeGeometry = new THREE.BufferGeometry();
+            scopeGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+            const material = new THREE.PointsMaterial({
+                color: 0x00ff00,
+                size: 2,
+                sizeAttenuation: false, // Constant pixel size
+                transparent: true,
+                opacity: 0.6,
+                blending: THREE.AdditiveBlending
+            });
+
+            scopePoints = new THREE.Points(scopeGeometry, material);
+            scene.add(scopePoints);
+
+            // --- GRID / CROSSHAIR ---
+            const gridHelper = new THREE.GridHelper(4, 4, 0x004400, 0x002200);
+            gridHelper.rotation.x = Math.PI / 2; // Rotate to face camera
+            scene.add(gridHelper);
+            
+            // Diagonal Axis Lines (L and R axes in standard goniometer)
+            const axisMat = new THREE.LineBasicMaterial({ color: 0x004400 });
+            const axisGeo = new THREE.BufferGeometry().setFromPoints([
+                new THREE.Vector3(-2, -2, 0), new THREE.Vector3(2, 2, 0), // L Axis
+                new THREE.Vector3(-2, 2, 0), new THREE.Vector3(2, -2, 0)  // R Axis
+            ]);
+            scene.add(new THREE.LineSegments(axisGeo, axisMat));
+
+            window.addEventListener('resize', onResize);
+        }
+
+        // --- AUDIO ENGINE ---
+
+        function initAudio() {
+            if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            if (audioContext.state === 'suspended') audioContext.resume();
+        }
+
+        function setupNodes(source) {
+            // Disconnect old nodes if any
+            if(sourceNode) sourceNode.disconnect();
+            sourceNode = source;
+
+            // Splitter to separate L and R
+            const splitter = audioContext.createChannelSplitter(2);
+            source.connect(splitter);
+
+            analyserL = audioContext.createAnalyser();
+            analyserR = audioContext.createAnalyser();
+            
+            // Critical for Vectorscope: Time Domain Data
+            analyserL.fftSize = SAMPLES * 2; // Need enough buffer
+            analyserR.fftSize = SAMPLES * 2;
+            
+            splitter.connect(analyserL, 0); // L -> Analyser 1
+            splitter.connect(analyserR, 1); // R -> Analyser 2
+
+            // Connect to output (if it's a file)
+            if (source instanceof AudioBufferSourceNode) {
+                source.connect(audioContext.destination);
+            }
+
+            dataL = new Float32Array(SAMPLES);
+            dataR = new Float32Array(SAMPLES);
+            
+            isRunning = true;
+            document.getElementById('drop-overlay').classList.add('hidden');
+        }
+
+        function handleFile(file) {
+            initAudio();
+            const reader = new FileReader();
+            reader.onload = e => {
+                audioContext.decodeAudioData(e.target.result, buffer => {
+                    const src = audioContext.createBufferSource();
+                    src.buffer = buffer;
+                    src.loop = true;
+                    src.start(0);
+                    setupNodes(src);
+                });
+            };
+            reader.readAsArrayBuffer(file);
+        }
+
+        function activateMic() {
+            initAudio();
+            navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                const src = audioContext.createMediaStreamSource(stream);
+                setupNodes(src);
+            });
+        }
+
+        function setupInteraction() {
+            const drop = document.getElementById('drop-overlay');
+            const fileIn = document.getElementById('file-input');
+            const btnMic = document.getElementById('btn-mic');
+
+            drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.background = '#002200'; });
+            drop.addEventListener('dragleave', e => { e.preventDefault(); drop.style.background = 'rgba(0,0,0,0.8)'; });
+            drop.addEventListener('drop', e => {
+                e.preventDefault();
+                if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+            });
+            drop.addEventListener('click', () => fileIn.click());
+            fileIn.addEventListener('change', e => { if(e.target.files.length) handleFile(e.target.files[0]); });
+            btnMic.addEventListener('click', activateMic);
+        }
+
+        // --- MATH & ANALYSIS ---
+
+        function toDB(gain) {
+            return 20 * Math.log10(Math.max(gain, 0.00001)); // Prevent -Infinity
+        }
+
+        function calculateMetrics(lData, rData) {
+            let sumL = 0, sumR = 0;
+            let sumLR = 0, sumL2 = 0, sumR2 = 0;
+            let peakL = 0, peakR = 0;
+
+            for(let i=0; i<lData.length; i++) {
+                const l = lData[i];
+                const r = rData[i];
+                
+                // RMS Components
+                sumL += l * l;
+                sumR += r * r;
+
+                // Correlation Components
+                sumLR += l * r;
+                sumL2 += l * l;
+                sumR2 += r * r;
+
+                // Peak
+                if(Math.abs(l) > peakL) peakL = Math.abs(l);
+                if(Math.abs(r) > peakR) peakR = Math.abs(r);
+            }
+
+            // RMS
+            const rmsL = Math.sqrt(sumL / lData.length);
+            const rmsR = Math.sqrt(sumR / rData.length);
+            const rmsTotal = (rmsL + rmsR) / 2;
+
+            // Correlation
+            // prevent divide by zero
+            const denom = Math.sqrt(sumL2 * sumR2);
+            let correlation = denom > 0.00001 ? sumLR / denom : 0;
+            // Clamp
+            correlation = Math.max(-1, Math.min(1, correlation));
+
+            return { rmsL, rmsR, rmsTotal, correlation, peakL, peakR };
+        }
+
+        // --- MAIN LOOP ---
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (isRunning && analyserL && analyserR) {
+                // Get Time Domain Data (Waveform)
+                analyserL.getFloatTimeDomainData(dataL);
+                analyserR.getFloatTimeDomainData(dataR);
+
+                // 1. UPDATE VECTORSCOPE
+                const positions = scopeGeometry.attributes.position.array;
+                
+                for (let i = 0; i < SAMPLES; i++) {
+                    const l = dataL[i];
+                    const r = dataR[i];
+
+                    // Goniometer Math
+                    // Rotate 45 degrees: 
+                    // X = (L - R) * 0.707 (Side)
+                    // Y = (L + R) * 0.707 (Mid)
+                    // We scale by 1.5 to fit screen better
+                    const x = (l - r) * 1.0; 
+                    const y = (l + r) * 1.0; 
+
+                    positions[i * 3] = x;
+                    positions[i * 3 + 1] = y;
+                    positions[i * 3 + 2] = 0;
+                }
+                scopeGeometry.attributes.position.needsUpdate = true;
+
+                // 2. CALCULATE & UPDATE UI
+                const m = calculateMetrics(dataL, dataR);
+
+                // Update dB Text
+                const db = toDB(m.rmsTotal).toFixed(1);
+                document.getElementById('val-db').innerText = db + " dB";
+
+                // Update Bar Widths (Clamp 0-100%)
+                // Visual range: -60dB to 0dB maps to 0-100%
+                const mapDB = (val) => Math.min(100, Math.max(0, (toDB(val) + 60) * (100/60)));
+                document.getElementById('bar-l').style.width = mapDB(m.rmsL) + "%";
+                document.getElementById('bar-r').style.width = mapDB(m.rmsR) + "%";
+
+                // Update Correlation Marker
+                // Range -1 to 1 maps to 0% to 100% left offset
+                const corrPercent = ((m.correlation + 1) / 2) * 100;
+                document.getElementById('corr-marker').style.left = corrPercent + "%";
+                document.getElementById('val-corr').innerText = (m.correlation > 0 ? "+" : "") + m.correlation.toFixed(2);
+
+                // Update Stereo Width (Side / Mid ratio approx)
+                // Simple approx: (1 - correlation) * 50%
+                const width = Math.max(0, (1 - m.correlation) * 50).toFixed(0); // 0% is mono, 100% is anti-phase/wide
+                document.getElementById('val-width').innerText = width + "%";
+
+                // Color warning if correlation is negative (Phasing issue)
+                const corrEl = document.getElementById('val-corr');
+                if (m.correlation < 0) {
+                    corrEl.style.color = '#ff0000';
+                    document.getElementById('corr-marker').style.background = '#ff0000';
+                } else {
+                    corrEl.style.color = 'var(--fg)';
+                    document.getElementById('corr-marker').style.background = '#fff';
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        function onResize() {
+            const aspect = window.innerWidth / window.innerHeight;
+            const frustum = 2;
+            camera.left = -frustum * aspect;
+            camera.right = frustum * aspect;
+            camera.top = frustum;
+            camera.bottom = -frustum;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+    </script>
+</body>
+</html>
