@@ -3,13 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SIGNAL ANALYSIS TERMINAL</title>
+    <title>CONSTELLATION by Junkyard.AI</title>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <style>
         :root {
             --bg: #050505;
             --fg: #00ff00; /* Oscilloscope Green */
             --dim: #004400;
+            --alert: #ff0000;
             --font: 'JetBrains Mono', monospace;
         }
 
@@ -28,8 +29,8 @@
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
             pointer-events: none;
             display: grid;
-            grid-template-columns: 250px 1fr 250px;
-            grid-template-rows: 60px 1fr 60px;
+            grid-template-columns: 280px 1fr 280px;
+            grid-template-rows: 60px 1fr 140px; /* Added height for spectrum at bottom */
             padding: 20px; box-sizing: border-box;
             z-index: 10;
         }
@@ -37,53 +38,120 @@
         /* METERS */
         .meter-container {
             border: 1px solid var(--dim);
-            background: rgba(0, 20, 0, 0.8);
-            padding: 10px;
-            display: flex; flex-direction: column; gap: 5px;
+            background: rgba(0, 10, 0, 0.9);
+            padding: 15px;
+            display: flex; flex-direction: column; gap: 8px;
             pointer-events: auto;
+            backdrop-filter: blur(2px);
         }
 
-        .label { font-size: 10px; color: var(--fg); opacity: 0.7; text-transform: uppercase; }
-        .value { font-size: 14px; font-weight: 700; margin-bottom: 5px; }
+        .label { font-size: 10px; color: var(--fg); opacity: 0.7; text-transform: uppercase; letter-spacing: 1px; }
+        .value { font-size: 14px; font-weight: 700; margin-bottom: 2px; }
         
         /* Bar Meters */
-        .bar-bg { width: 100%; height: 6px; background: var(--dim); position: relative; }
+        .bar-bg { width: 100%; height: 6px; background: var(--dim); position: relative; overflow: hidden; }
         .bar-fill { height: 100%; background: var(--fg); width: 0%; transition: width 0.05s linear; }
+
+        /* Clipping Indicator */
+        .clip-indicator {
+            width: 10px; height: 10px; background: #330000;
+            border: 1px solid #550000;
+            margin-left: auto;
+            transition: background 0.1s;
+        }
+        .clip-indicator.active { background: #ff0000; box-shadow: 0 0 5px #ff0000; border-color: #ff0000; }
+        .meter-row { display: flex; align-items: center; justify-content: space-between; }
 
         /* Correlation Meter */
         .corr-scale { 
             display: flex; justify-content: space-between; 
-            font-size: 8px; opacity: 0.5; margin-top: 2px;
+            font-size: 8px; opacity: 0.5; margin-top: 4px;
         }
         .corr-marker {
             width: 2px; height: 100%; background: #fff; position: absolute; left: 50%; top: 0;
             transform: translateX(-50%); z-index: 2;
         }
 
+        /* Spectrum */
+        #spectrum-container {
+            grid-column: 1 / 4;
+            grid-row: 3;
+            display: flex;
+            align-items: flex-end;
+            justify-content: center;
+            pointer-events: none;
+            opacity: 0.8;
+        }
+        #spectrum-canvas {
+            width: 100%;
+            height: 100%;
+        }
+
+        /* Color Picker */
+        .theme-selector {
+            display: flex; gap: 5px; margin-top: 10px;
+        }
+        .color-dot {
+            width: 15px; height: 15px; border-radius: 50%; cursor: pointer;
+            border: 1px solid rgba(255,255,255,0.2);
+        }
+        .color-dot:hover { transform: scale(1.1); }
+
         /* DROP ZONE */
         #drop-overlay {
             position: absolute; top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0,0,0,0.8);
+            background: rgba(0,0,0,0.85);
             display: flex; flex-direction: column;
             align-items: center; justify-content: center;
             z-index: 50; pointer-events: auto; cursor: pointer;
+            backdrop-filter: blur(5px);
         }
         #drop-overlay.hidden { display: none; }
         
         .drop-box {
-            border: 2px solid var(--fg); padding: 40px;
-            text-align: center; background: #001100;
+            border: 2px solid var(--fg); padding: 50px;
+            text-align: center; background: rgba(0, 20, 0, 0.5);
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
         }
-        .drop-box:hover { background: #002200; }
+        .drop-box:hover { background: rgba(0, 40, 0, 0.6); }
+
+        /* EXPORT CONTROLS (Hidden by default) */
+        #export-panel {
+            grid-column: 3; grid-row: 2;
+            align-self: end; justify-self: end;
+            display: flex; flex-direction: column; gap: 5px;
+            margin-bottom: 20px;
+            opacity: 0; pointer-events: none;
+            transition: opacity 0.3s;
+        }
+        #export-panel.visible {
+            opacity: 1; pointer-events: auto;
+        }
 
         /* UTILS */
         .mono-font { font-family: 'JetBrains Mono', monospace; }
         button {
-            background: var(--dim); border: 1px solid var(--fg); color: var(--fg);
-            padding: 5px 10px; font-family: var(--font); font-size: 10px;
+            background: rgba(0,0,0,0.3); border: 1px solid var(--fg); color: var(--fg);
+            padding: 8px 12px; font-family: var(--font); font-size: 10px;
             cursor: pointer; text-transform: uppercase; margin-top: 5px;
+            transition: all 0.2s;
         }
         button:hover { background: var(--fg); color: var(--bg); }
+        button:active { transform: translateY(1px); }
+        
+        .panel-right {
+            grid-column: 3; grid-row: 1 / 3;
+            text-align: right;
+            align-items: flex-end;
+        }
+
+        .branding {
+            position: absolute; bottom: 20px; right: 20px;
+            text-align: right; pointer-events: none;
+            z-index: 5;
+        }
+        .branding h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 2px; }
+        .branding h2 { margin: 0; font-size: 10px; opacity: 0.6; font-weight: 400; }
 
     </style>
     <!-- THREE.js -->
@@ -98,12 +166,31 @@
 </head>
 <body>
 
+    <!-- BRANDING -->
+    <div class="branding">
+        <h1>CONSTELLATION</h1>
+        <h2>by Junkyard.AI</h2>
+    </div>
+
     <!-- UI LAYER -->
     <div id="ui-grid">
         <!-- TOP LEFT: METRICS -->
         <div class="meter-container" style="grid-column: 1; grid-row: 1 / 3;">
-            <div class="label">RMS LEVEL (dBFS)</div>
-            <div class="value" id="val-db">-inf dB</div>
+            <div style="margin-bottom: 10px; border-bottom: 1px solid var(--dim); padding-bottom: 5px;">
+                <div class="label" style="font-size: 12px; color: var(--fg);">CONSTELLATION</div>
+                <div class="label">SIGNAL TERMINAL</div>
+            </div>
+            
+            <div class="meter-row">
+                <div>
+                    <div class="label">RMS LEVEL</div>
+                    <div class="value" id="val-db">-inf dB</div>
+                </div>
+                <div style="text-align: right;">
+                    <div class="label">CLIP</div>
+                    <div id="clip-led" class="clip-indicator"></div>
+                </div>
+            </div>
             
             <div class="label" style="margin-top: 10px;">L Channel</div>
             <div class="bar-bg"><div id="bar-l" class="bar-fill"></div></div>
@@ -114,12 +201,11 @@
             <div style="margin-top: 20px; border-top: 1px solid var(--dim); padding-top: 10px;">
                 <div class="label">PHASE CORRELATION</div>
                 <div class="value" id="val-corr">+1.00</div>
-                <!-- Correlation Bar: Center is 0, Left is -1, Right is +1 -->
                 <div class="bar-bg" style="height: 10px;">
                     <div class="corr-marker" id="corr-marker"></div>
                     <div style="position: absolute; left: 50%; height: 100%; width: 1px; background: #555;"></div>
                 </div>
-                <div class="corr-scale"><span>-1 (PHASE)</span><span>0 (WIDE)</span><span>+1 (MONO)</span></div>
+                <div class="corr-scale"><span>-1</span><span>0</span><span>+1</span></div>
             </div>
 
             <div style="margin-top: 20px; border-top: 1px solid var(--dim); padding-top: 10px;">
@@ -127,24 +213,52 @@
                 <div class="value" id="val-width">0%</div>
             </div>
             
-            <button id="btn-mic" style="margin-top: auto;">ACTIVATE MIC</button>
-            <button id="btn-reset" onclick="location.reload()">RESET SYSTEM</button>
+            <div style="margin-top: auto; display: flex; flex-direction: column; gap: 5px;">
+                <button id="btn-pause" onclick="togglePause()">PAUSE / RESUME</button>
+                <button id="btn-mic">ACTIVATE MIC</button>
+                <button id="btn-reset" onclick="location.reload()">RESET SYSTEM</button>
+            </div>
         </div>
 
-        <!-- TOP RIGHT: SPECTRUM -->
-        <!-- Just a label, the visual is 3D -->
-        <div style="grid-column: 3; text-align: right; opacity: 0.5; font-size: 10px;">
-            <div class="label">VECTORSCOPE / GONIOMETER</div>
-            <div>X = SIDE (L-R)</div>
-            <div>Y = MID (L+R)</div>
+        <!-- EXPORT PANEL (Bottom Right, visible on pause) -->
+        <div id="export-panel" class="meter-container">
+            <div class="label">EXPORT SNAPSHOT</div>
+            <button onclick="exportSnapshot(1080, 1080)">SQUARE (1080x1080)</button>
+            <button onclick="exportSnapshot(1080, 1920)">VERTICAL (1080x1920)</button>
+        </div>
+
+        <!-- TOP RIGHT: SETTINGS -->
+        <div class="meter-container panel-right">
+            <div class="label">VISUAL CONFIGURATION</div>
+            <div style="margin-top: 10px; width: 100%;">
+                <div class="label">THEME COLOR</div>
+                <div class="theme-selector">
+                    <div class="color-dot" style="background: #00ff00;" onclick="setTheme('#00ff00', '#004400')"></div> <!-- Green -->
+                    <div class="color-dot" style="background: #00ffff;" onclick="setTheme('#00ffff', '#004444')"></div> <!-- Cyan -->
+                    <div class="color-dot" style="background: #ff0000;" onclick="setTheme('#ff0000', '#440000')"></div> <!-- Red -->
+                    <div class="color-dot" style="background: #bf00ff;" onclick="setTheme('#bf00ff', '#2a0044')"></div> <!-- Purple -->
+                    <div class="color-dot" style="background: #ff00ff;" onclick="setTheme('#ff00ff', '#440044')"></div> <!-- Pink -->
+                </div>
+            </div>
+            <div style="margin-top: 20px; text-align: right; opacity: 0.5; font-size: 10px;">
+                <div class="label">GONIOMETER MODE</div>
+                <div>X = SIDE (L-R)</div>
+                <div>Y = MID (L+R)</div>
+            </div>
+        </div>
+
+        <!-- BOTTOM: SPECTRUM -->
+        <div id="spectrum-container">
+            <canvas id="spectrum-canvas"></canvas>
         </div>
     </div>
 
     <!-- DRAG DROP -->
     <div id="drop-overlay" onclick="document.getElementById('file-input').click()">
         <div class="drop-box">
-            <div style="font-size: 20px; font-weight: 700;">INITIALIZE ANALYZER</div>
+            <div style="font-size: 20px; font-weight: 700;">CONSTELLATION</div>
             <div style="font-size: 12px; margin-top: 10px; opacity: 0.7;">CLICK OR DRAG AUDIO FILE</div>
+            <div style="font-size: 10px; margin-top: 20px; color: var(--fg); opacity: 0.5;">by Junkyard.AI</div>
         </div>
         <input type="file" id="file-input" accept="audio/*" style="display:none;">
     </div>
@@ -153,15 +267,100 @@
         import * as THREE from 'three';
 
         // --- CONFIG ---
-        const SAMPLES = 4096; // Resolution of the scope
+        const SAMPLES = 4096; 
         
         // --- GLOBALS ---
         let scene, camera, renderer;
-        let scopeGeometry, scopePoints; // The Vectorscope Cloud
+        let scopeGeometry, scopePoints, scopeMaterial;
         let audioContext, sourceNode;
-        let analyserL, analyserR; // Stereo analysis requires two nodes
+        let analyserL, analyserR, analyserSpectrum;
         let dataL, dataR;
+        let freqData;
         let isRunning = false;
+        let isPaused = false;
+        
+        // Spectrum Canvas
+        const specCanvas = document.getElementById('spectrum-canvas');
+        const specCtx = specCanvas.getContext('2d');
+
+        // Theme Globals
+        let currentFG = '#00ff00';
+        let currentDim = '#004400';
+
+        // Expose togglePause to window so HTML button can find it
+        window.togglePause = function() {
+            if(!audioContext) return;
+            const exportPanel = document.getElementById('export-panel');
+            
+            if(audioContext.state === 'running') {
+                audioContext.suspend();
+                isPaused = true;
+                document.getElementById('btn-pause').style.background = 'var(--fg)';
+                document.getElementById('btn-pause').style.color = 'var(--bg)';
+                document.getElementById('btn-pause').innerText = "RESUME";
+                exportPanel.classList.add('visible');
+            } else if(audioContext.state === 'suspended') {
+                audioContext.resume();
+                isPaused = false;
+                document.getElementById('btn-pause').style.background = '';
+                document.getElementById('btn-pause').style.color = 'var(--fg)';
+                document.getElementById('btn-pause').innerText = "PAUSE";
+                exportPanel.classList.remove('visible');
+            }
+        };
+
+        window.exportSnapshot = function(width, height) {
+            if (!renderer) return;
+
+            // Save current size
+            const originalSize = new THREE.Vector2();
+            renderer.getSize(originalSize);
+            
+            // Resize to target
+            renderer.setSize(width, height);
+            
+            // Update Camera for target aspect ratio
+            const aspect = width / height;
+            const frustum = 2; // Keep scale consistent
+            camera.left = -frustum * aspect;
+            camera.right = frustum * aspect;
+            camera.top = frustum;
+            camera.bottom = -frustum;
+            camera.updateProjectionMatrix();
+
+            // Render high res frame
+            renderer.render(scene, camera);
+
+            // Capture
+            const dataURL = renderer.domElement.toDataURL('image/png');
+            
+            // Create download
+            const link = document.createElement('a');
+            link.download = `CONSTELLATION_EXPORT_${width}x${height}_${Date.now()}.png`;
+            link.href = dataURL;
+            link.click();
+
+            // Restore original state
+            renderer.setSize(originalSize.width, originalSize.height);
+            onResize(); // Resets camera to window aspect
+            renderer.render(scene, camera); // Render back to screen
+        }
+
+        // Theme Function
+        window.setTheme = function(fg, dim) {
+            currentFG = fg;
+            currentDim = dim;
+            
+            // CSS Vars
+            document.documentElement.style.setProperty('--fg', fg);
+            document.documentElement.style.setProperty('--dim', dim);
+            
+            // Three JS Update
+            if(scopeMaterial) scopeMaterial.color.set(fg);
+            
+            // Re-render immediately if paused to show color change
+            if(isPaused) renderer.render(scene, camera);
+        }
 
         initGraphics();
         setupInteraction();
@@ -174,9 +373,8 @@
             scene = new THREE.Scene();
             scene.background = new THREE.Color(0x050505);
 
-            // Orthographic Camera for precision 2D plotting
             const aspect = window.innerWidth / window.innerHeight;
-            const frustumSize = 2; // Keep scale manageable -1 to 1
+            const frustumSize = 2;
             camera = new THREE.OrthographicCamera(
                 -frustumSize * aspect, frustumSize * aspect, 
                 frustumSize, -frustumSize, 
@@ -184,46 +382,38 @@
             );
             camera.position.z = 10;
 
-            renderer = new THREE.WebGLRenderer({ antialias: false });
+            renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             container.appendChild(renderer.domElement);
 
             // --- VECTORSCOPE GEOMETRY ---
-            // A cloud of points that we update every frame
             const positions = new Float32Array(SAMPLES * 3);
             scopeGeometry = new THREE.BufferGeometry();
             scopeGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
 
-            const material = new THREE.PointsMaterial({
-                color: 0x00ff00,
+            scopeMaterial = new THREE.PointsMaterial({
+                color: currentFG,
                 size: 2,
-                sizeAttenuation: false, // Constant pixel size
+                sizeAttenuation: false,
                 transparent: true,
                 opacity: 0.6,
                 blending: THREE.AdditiveBlending
             });
 
-            scopePoints = new THREE.Points(scopeGeometry, material);
+            scopePoints = new THREE.Points(scopeGeometry, scopeMaterial);
             scene.add(scopePoints);
 
-            // --- GRID / CROSSHAIR ---
-            const gridHelper = new THREE.GridHelper(4, 4, 0x004400, 0x002200);
-            gridHelper.rotation.x = Math.PI / 2; // Rotate to face camera
+            // --- GRID ---
+            // We use standard line segments for grid so we can recolor them easily if needed, 
+            // but for now keeping them static dark green is fine or we can link them to theme
+            const gridHelper = new THREE.GridHelper(4, 4, 0x111111, 0x111111);
+            gridHelper.rotation.x = Math.PI / 2;
             scene.add(gridHelper);
             
-            // Diagonal Axis Lines (L and R axes in standard goniometer)
-            const axisMat = new THREE.LineBasicMaterial({ color: 0x004400 });
-            const axisGeo = new THREE.BufferGeometry().setFromPoints([
-                new THREE.Vector3(-2, -2, 0), new THREE.Vector3(2, 2, 0), // L Axis
-                new THREE.Vector3(-2, 2, 0), new THREE.Vector3(2, -2, 0)  // R Axis
-            ]);
-            scene.add(new THREE.LineSegments(axisGeo, axisMat));
-
             window.addEventListener('resize', onResize);
+            onResize(); // Init canvas sizes
         }
-
-        // --- AUDIO ENGINE ---
 
         function initAudio() {
             if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
@@ -231,31 +421,39 @@
         }
 
         function setupNodes(source) {
-            // Disconnect old nodes if any
             if(sourceNode) sourceNode.disconnect();
             sourceNode = source;
 
-            // Splitter to separate L and R
+            // Chain: Source -> Splitter -> (Analysers L/R)
+            //               -> AnalyserSpectrum -> Destination
+            
             const splitter = audioContext.createChannelSplitter(2);
-            source.connect(splitter);
-
             analyserL = audioContext.createAnalyser();
             analyserR = audioContext.createAnalyser();
-            
-            // Critical for Vectorscope: Time Domain Data
-            analyserL.fftSize = SAMPLES * 2; // Need enough buffer
+            analyserSpectrum = audioContext.createAnalyser();
+
+            // Vectorscope Setup
+            analyserL.fftSize = SAMPLES * 2;
             analyserR.fftSize = SAMPLES * 2;
             
-            splitter.connect(analyserL, 0); // L -> Analyser 1
-            splitter.connect(analyserR, 1); // R -> Analyser 2
+            // Spectrum Setup
+            analyserSpectrum.fftSize = 2048; 
+            analyserSpectrum.smoothingTimeConstant = 0.85;
 
-            // Connect to output (if it's a file)
+            // Routing
+            source.connect(splitter);
+            splitter.connect(analyserL, 0);
+            splitter.connect(analyserR, 1);
+            
+            source.connect(analyserSpectrum); // Mix for spectrum
+            
             if (source instanceof AudioBufferSourceNode) {
                 source.connect(audioContext.destination);
             }
 
             dataL = new Float32Array(SAMPLES);
             dataR = new Float32Array(SAMPLES);
+            freqData = new Uint8Array(analyserSpectrum.frequencyBinCount);
             
             isRunning = true;
             document.getElementById('drop-overlay').classList.add('hidden');
@@ -266,6 +464,7 @@
             const reader = new FileReader();
             reader.onload = e => {
                 audioContext.decodeAudioData(e.target.result, buffer => {
+                    if(sourceNode) { try{ sourceNode.stop(); } catch(e){} }
                     const src = audioContext.createBufferSource();
                     src.buffer = buffer;
                     src.loop = true;
@@ -290,12 +489,11 @@
             const btnMic = document.getElementById('btn-mic');
 
             drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.background = '#002200'; });
-            drop.addEventListener('dragleave', e => { e.preventDefault(); drop.style.background = 'rgba(0,0,0,0.8)'; });
+            drop.addEventListener('dragleave', e => { e.preventDefault(); drop.style.background = 'rgba(0,0,0,0.85)'; });
             drop.addEventListener('drop', e => {
                 e.preventDefault();
                 if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
             });
-            drop.addEventListener('click', () => fileIn.click());
             fileIn.addEventListener('change', e => { if(e.target.files.length) handleFile(e.target.files[0]); });
             btnMic.addEventListener('click', activateMic);
         }
@@ -303,7 +501,7 @@
         // --- MATH & ANALYSIS ---
 
         function toDB(gain) {
-            return 20 * Math.log10(Math.max(gain, 0.00001)); // Prevent -Infinity
+            return 20 * Math.log10(Math.max(gain, 0.00001));
         }
 
         function calculateMetrics(lData, rData) {
@@ -315,33 +513,70 @@
                 const l = lData[i];
                 const r = rData[i];
                 
-                // RMS Components
                 sumL += l * l;
                 sumR += r * r;
-
-                // Correlation Components
                 sumLR += l * r;
                 sumL2 += l * l;
                 sumR2 += r * r;
 
-                // Peak
                 if(Math.abs(l) > peakL) peakL = Math.abs(l);
                 if(Math.abs(r) > peakR) peakR = Math.abs(r);
             }
 
-            // RMS
             const rmsL = Math.sqrt(sumL / lData.length);
             const rmsR = Math.sqrt(sumR / rData.length);
             const rmsTotal = (rmsL + rmsR) / 2;
 
-            // Correlation
-            // prevent divide by zero
             const denom = Math.sqrt(sumL2 * sumR2);
             let correlation = denom > 0.00001 ? sumLR / denom : 0;
-            // Clamp
             correlation = Math.max(-1, Math.min(1, correlation));
 
             return { rmsL, rmsR, rmsTotal, correlation, peakL, peakR };
+        }
+
+        function drawSpectrum() {
+            if(!analyserSpectrum) return;
+            
+            const w = specCanvas.width;
+            const h = specCanvas.height;
+            specCtx.clearRect(0, 0, w, h);
+
+            analyserSpectrum.getByteFrequencyData(freqData);
+            
+            specCtx.beginPath();
+            specCtx.strokeStyle = currentFG;
+            specCtx.lineWidth = 1;
+            specCtx.fillStyle = currentDim;
+            
+            const sliceWidth = w * 1.0 / freqData.length;
+            let x = 0;
+
+            specCtx.moveTo(0, h);
+            
+            // Draw filled shape
+            for(let i = 0; i < freqData.length; i++) {
+                const v = freqData[i] / 255.0;
+                const y = h - (v * h);
+                
+                // Logarithmic x-axis approximation for better music viz (simple version)
+                // Linear is actually fine for standard analysis views
+                specCtx.lineTo(x, y);
+                x += sliceWidth;
+            }
+            
+            specCtx.lineTo(w, h);
+            specCtx.fill();
+            specCtx.stroke();
+            
+            // Grid lines for spectrum
+            specCtx.fillStyle = currentFG;
+            specCtx.font = "10px JetBrains Mono";
+            specCtx.globalAlpha = 0.5;
+            // 0Hz is left, Nyquist is right (usually 22050Hz)
+            // Simple markers
+            specCtx.fillText("20Hz", 10, h - 5);
+            specCtx.fillText("20kHz", w - 40, h - 5);
+            specCtx.globalAlpha = 1.0;
         }
 
         // --- MAIN LOOP ---
@@ -349,65 +584,72 @@
         function animate() {
             requestAnimationFrame(animate);
 
-            if (isRunning && analyserL && analyserR) {
-                // Get Time Domain Data (Waveform)
+            if (isRunning && !isPaused && analyserL && analyserR) {
                 analyserL.getFloatTimeDomainData(dataL);
                 analyserR.getFloatTimeDomainData(dataR);
 
                 // 1. UPDATE VECTORSCOPE
                 const positions = scopeGeometry.attributes.position.array;
-                
                 for (let i = 0; i < SAMPLES; i++) {
                     const l = dataL[i];
                     const r = dataR[i];
-
-                    // Goniometer Math
-                    // Rotate 45 degrees: 
-                    // X = (L - R) * 0.707 (Side)
-                    // Y = (L + R) * 0.707 (Mid)
-                    // We scale by 1.5 to fit screen better
+                    // Rotate 45deg: X = (L-R), Y = (L+R)
                     const x = (l - r) * 1.0; 
                     const y = (l + r) * 1.0; 
-
                     positions[i * 3] = x;
                     positions[i * 3 + 1] = y;
                     positions[i * 3 + 2] = 0;
                 }
                 scopeGeometry.attributes.position.needsUpdate = true;
 
-                // 2. CALCULATE & UPDATE UI
+                // 2. UPDATE UI METRICS
                 const m = calculateMetrics(dataL, dataR);
 
-                // Update dB Text
+                // DB
                 const db = toDB(m.rmsTotal).toFixed(1);
                 document.getElementById('val-db').innerText = db + " dB";
 
-                // Update Bar Widths (Clamp 0-100%)
-                // Visual range: -60dB to 0dB maps to 0-100%
+                // Bars
                 const mapDB = (val) => Math.min(100, Math.max(0, (toDB(val) + 60) * (100/60)));
                 document.getElementById('bar-l').style.width = mapDB(m.rmsL) + "%";
                 document.getElementById('bar-r').style.width = mapDB(m.rmsR) + "%";
 
-                // Update Correlation Marker
-                // Range -1 to 1 maps to 0% to 100% left offset
+                // Clipping
+                const clipEl = document.getElementById('clip-led');
+                if (m.peakL >= 0.99 || m.peakR >= 0.99) {
+                    clipEl.classList.add('active');
+                    // Auto remove class after a short delay is tricky in a loop, 
+                    // usually better to just set it based on current frame, 
+                    // but we want it to 'stick' slightly so it's visible.
+                    // Simple approach: set it, CSS transition handles fade in, 
+                    // we remove it if not clipping? No, we want a hold.
+                    // Let's just set it true here, and use a timeout to clear it if we implement a hold system.
+                    // Simple frame-based:
+                    clipEl.style.opacity = "1";
+                } else {
+                    // Fade out
+                    clipEl.classList.remove('active');
+                }
+
+                // Correlation
                 const corrPercent = ((m.correlation + 1) / 2) * 100;
                 document.getElementById('corr-marker').style.left = corrPercent + "%";
                 document.getElementById('val-corr').innerText = (m.correlation > 0 ? "+" : "") + m.correlation.toFixed(2);
-
-                // Update Stereo Width (Side / Mid ratio approx)
-                // Simple approx: (1 - correlation) * 50%
-                const width = Math.max(0, (1 - m.correlation) * 50).toFixed(0); // 0% is mono, 100% is anti-phase/wide
-                document.getElementById('val-width').innerText = width + "%";
-
-                // Color warning if correlation is negative (Phasing issue)
-                const corrEl = document.getElementById('val-corr');
+                
                 if (m.correlation < 0) {
-                    corrEl.style.color = '#ff0000';
-                    document.getElementById('corr-marker').style.background = '#ff0000';
+                    document.getElementById('val-corr').style.color = 'var(--alert)';
+                    document.getElementById('corr-marker').style.background = 'var(--alert)';
                 } else {
-                    corrEl.style.color = 'var(--fg)';
+                    document.getElementById('val-corr').style.color = 'var(--fg)';
                     document.getElementById('corr-marker').style.background = '#fff';
                 }
+
+                // Width
+                const width = Math.max(0, (1 - m.correlation) * 50).toFixed(0);
+                document.getElementById('val-width').innerText = width + "%";
+
+                // 3. DRAW SPECTRUM
+                drawSpectrum();
             }
 
             renderer.render(scene, camera);
@@ -422,6 +664,13 @@
             camera.bottom = -frustum;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
+
+            // Resize Spectrum Canvas
+            const container = document.getElementById('spectrum-container');
+            if(container) {
+                specCanvas.width = container.clientWidth;
+                specCanvas.height = container.clientHeight;
+            }
         }
 
     </script>
