@@ -20,6 +20,7 @@
             font-family: var(--font); 
             color: var(--fg);
             user-select: none;
+            transition: background-color 0.3s;
         }
         
         canvas { display: block; }
@@ -30,10 +31,24 @@
             pointer-events: none;
             display: grid;
             grid-template-columns: 280px 1fr 280px;
-            grid-template-rows: 60px 1fr 140px; /* Added height for spectrum at bottom */
+            grid-template-rows: 60px 1fr 140px; 
             padding: 20px; box-sizing: border-box;
             z-index: 10;
+            transition: opacity 0.5s ease;
         }
+
+        /* Presentation Mode Hides UI */
+        body.presentation-mode #ui-grid { opacity: 0; pointer-events: none; }
+        body.presentation-mode .branding { opacity: 0; }
+        
+        /* Hint for exiting presentation mode */
+        #presentation-hint {
+            position: absolute; top: 20px; width: 100%; text-align: center;
+            opacity: 0; pointer-events: none; transition: opacity 0.5s;
+            z-index: 100; text-shadow: 0 0 5px #000;
+            font-size: 10px; letter-spacing: 2px;
+        }
+        body.presentation-mode #presentation-hint { opacity: 0.5; }
 
         /* METERS */
         .meter-container {
@@ -88,7 +103,7 @@
             height: 100%;
         }
 
-        /* TRANSPORT CONTROLS (NEW) */
+        /* TRANSPORT CONTROLS */
         #transport-panel {
             grid-column: 2;
             grid-row: 2;
@@ -150,8 +165,9 @@
             align-items: center; justify-content: center;
             z-index: 50; pointer-events: auto; cursor: pointer;
             backdrop-filter: blur(5px);
+            opacity: 1; transition: opacity 0.3s;
         }
-        #drop-overlay.hidden { display: none; }
+        #drop-overlay.hidden { opacity: 0; pointer-events: none; }
         
         .drop-box {
             border: 2px solid var(--fg); padding: 50px;
@@ -160,7 +176,7 @@
         }
         .drop-box:hover { background: rgba(0, 40, 0, 0.6); }
 
-        /* EXPORT CONTROLS (Hidden by default) */
+        /* EXPORT CONTROLS */
         #export-panel {
             grid-column: 3; grid-row: 2;
             align-self: end; justify-self: end;
@@ -194,9 +210,14 @@
             position: absolute; bottom: 20px; right: 20px;
             text-align: right; pointer-events: none;
             z-index: 5;
+            transition: opacity 0.5s;
         }
         .branding h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 2px; }
         .branding h2 { margin: 0; font-size: 10px; opacity: 0.6; font-weight: 400; }
+
+        /* BUTTON GROUPS */
+        .btn-group { display: flex; gap: 5px; }
+        .btn-group button { flex: 1; }
 
     </style>
     <!-- THREE.js -->
@@ -216,6 +237,9 @@
         <h1>CONSTELLATION</h1>
         <h2>by Junkyard.AI</h2>
     </div>
+
+    <!-- PRESENTATION HINT -->
+    <div id="presentation-hint">PRESS ESC TO EXIT PRESENTATION MODE</div>
 
     <!-- UI LAYER -->
     <div id="ui-grid">
@@ -260,17 +284,17 @@
             
             <div style="margin-top: auto; display: flex; flex-direction: column; gap: 5px;">
                 <button id="btn-pause" onclick="togglePause()">PAUSE / RESUME</button>
-                <button id="btn-mic">ACTIVATE MIC</button>
-                <button id="btn-reset" onclick="location.reload()">RESET SYSTEM</button>
+                <button id="btn-mic" id="btn-mic" onclick="toggleMic()">ACTIVATE MIC</button>
+                <button id="btn-load" onclick="showLoader()">LOAD FILE</button>
             </div>
         </div>
 
-        <!-- CENTER: TRANSPORT (NEW) -->
+        <!-- CENTER: TRANSPORT -->
         <div id="transport-panel">
             <div class="scrub-container">
                 <div class="time-display">
                     <span id="time-current">00:00.00</span>
-                    <span id="track-name" style="opacity:0.5; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">TRACK SCANNING...</span>
+                    <span id="track-name" style="opacity:0.5; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">NO SIGNAL</span>
                     <span id="time-total">00:00.00</span>
                 </div>
                 <div class="scrub-bar" id="scrub-bar">
@@ -282,9 +306,17 @@
 
         <!-- EXPORT PANEL (Bottom Right, visible on pause) -->
         <div id="export-panel" class="meter-container">
-            <div class="label">EXPORT SNAPSHOT</div>
-            <button onclick="exportSnapshot(1080, 1080)">SQUARE (1080x1080)</button>
-            <button onclick="exportSnapshot(1080, 1920)">VERTICAL (1080x1920)</button>
+            <div class="label">CAPTURE SNAPSHOT</div>
+            <div style="font-size:9px; opacity:0.6; margin-bottom:5px;">PAUSE TO ENABLE</div>
+            <div class="btn-group">
+                <button onclick="exportSnapshot(1080, 1080, false)">SQUARE</button>
+                <button onclick="exportSnapshot(1080, 1920, false)">STORY</button>
+            </div>
+            <div class="label" style="margin-top:10px;">TRANSPARENT (PNG)</div>
+            <div class="btn-group">
+                <button onclick="exportSnapshot(1080, 1080, true)">SQUARE</button>
+                <button onclick="exportSnapshot(1080, 1920, true)">STORY</button>
+            </div>
         </div>
 
         <!-- TOP RIGHT: SETTINGS -->
@@ -300,6 +332,9 @@
                     <div class="color-dot" style="background: #ff00ff;" onclick="setTheme('#ff00ff', '#440044')"></div> <!-- Pink -->
                 </div>
             </div>
+            
+            <button style="margin-top: 20px; width: 100%;" onclick="togglePresentation()">PRESENTATION MODE</button>
+
             <div style="margin-top: 20px; text-align: right; opacity: 0.5; font-size: 10px;">
                 <div class="label">GONIOMETER MODE</div>
                 <div>X = SIDE (L-R)</div>
@@ -335,7 +370,7 @@
         // --- GLOBALS ---
         let scene, camera, renderer;
         let scopeGeometry, scopePoints, scopeMaterial;
-        let audioContext, sourceNode;
+        let audioContext, sourceNode, micStream;
         let analyserL, analyserR, analyserSpectrum;
         let dataL, dataR;
         let freqData;
@@ -354,14 +389,11 @@
         let currentFG = '#00ff00';
         let currentDim = '#004400';
 
-        // Expose togglePause to window so HTML button can find it
+        // --- EXPORTED FUNCTIONS ---
+
         window.togglePause = function() {
             if(!audioContext) return;
             const exportPanel = document.getElementById('export-panel');
-            const btn = document.getElementById('btn-pause');
-            
-            // If using Microphone, we suspend context. 
-            // If using File, we pause Element.
             
             if (isMic) {
                 if(audioContext.state === 'running') {
@@ -372,7 +404,6 @@
                     setPauseState(false);
                 }
             } else {
-                // File mode
                 if (audioElement.paused) {
                     audioElement.play();
                     setPauseState(false);
@@ -382,6 +413,116 @@
                 }
             }
         };
+
+        window.toggleMic = function() {
+            if(isMic) {
+                // Deactivate Mic
+                if(micStream) {
+                    micStream.getTracks().forEach(track => track.stop());
+                    micStream = null;
+                }
+                isMic = false;
+                
+                // Reset UI
+                const btnMic = document.getElementById('btn-mic');
+                btnMic.innerText = "ACTIVATE MIC";
+                btnMic.style.background = "";
+                btnMic.style.color = "";
+                
+                // Attempt to return to file playback
+                if(audioElement.src) {
+                    document.getElementById('track-name').innerText = "RESUMING FILE...";
+                    
+                    // Resume context if it was suspended during mic usage
+                    if (audioContext.state === 'suspended') audioContext.resume();
+
+                    // Re-init audio chain for file
+                    if (audioElement._sourceNode) {
+                        setupNodes(audioElement._sourceNode, false);
+                        audioElement.play().catch(e => console.error(e));
+                    }
+                } else {
+                    // No file loaded, reset to empty state
+                    document.getElementById('track-name').innerText = "NO SIGNAL";
+                    document.getElementById('transport-panel').classList.remove('active');
+                    showLoader();
+                }
+                
+            } else {
+                activateMic();
+            }
+        }
+
+        window.showLoader = function() {
+            document.getElementById('drop-overlay').classList.remove('hidden');
+        }
+
+        window.togglePresentation = function() {
+            document.body.classList.toggle('presentation-mode');
+        }
+
+        // Add ESC key listener for Presentation Mode
+        window.addEventListener('keydown', (e) => {
+            if(e.key === "Escape") {
+                document.body.classList.remove('presentation-mode');
+            }
+        });
+
+        window.exportSnapshot = function(width, height, transparent) {
+            if (!renderer) return;
+
+            const originalSize = new THREE.Vector2();
+            renderer.getSize(originalSize);
+            
+            renderer.setSize(width, height);
+            
+            const aspect = width / height;
+            const frustum = 2; 
+            camera.left = -frustum * aspect;
+            camera.right = frustum * aspect;
+            camera.top = frustum;
+            camera.bottom = -frustum;
+            camera.updateProjectionMatrix();
+
+            // Handle Transparency
+            const oldClearColor = renderer.getClearColor(new THREE.Color());
+            const oldClearAlpha = renderer.getClearAlpha();
+            const oldBg = scene.background;
+
+            if (transparent) {
+                scene.background = null; 
+                renderer.setClearColor(0x000000, 0); 
+            }
+
+            renderer.render(scene, camera);
+            const dataURL = renderer.domElement.toDataURL('image/png');
+            
+            // Restore
+            if (transparent) {
+                scene.background = oldBg;
+                renderer.setClearColor(oldClearColor, oldClearAlpha);
+            }
+
+            const link = document.createElement('a');
+            link.download = `CONSTELLATION_${transparent ? 'ALPHA_' : ''}${width}x${height}_${Date.now()}.png`;
+            link.href = dataURL;
+            link.click();
+
+            renderer.setSize(originalSize.width, originalSize.height);
+            onResize(); 
+            renderer.render(scene, camera); 
+        }
+
+        window.setTheme = function(fg, dim) {
+            currentFG = fg;
+            currentDim = dim;
+            document.documentElement.style.setProperty('--fg', fg);
+            document.documentElement.style.setProperty('--dim', dim);
+            if(scopeMaterial) scopeMaterial.color.set(fg);
+            if(audioElement.paused && isRunning) renderer.render(scene, camera);
+        }
+
+        // --- INTERNAL FUNCTIONS ---
 
         function setPauseState(paused) {
             const exportPanel = document.getElementById('export-panel');
@@ -398,59 +539,6 @@
                 btn.innerText = "PAUSE";
                 exportPanel.classList.remove('visible');
             }
-        }
-
-        window.exportSnapshot = function(width, height) {
-            if (!renderer) return;
-
-            // Save current size
-            const originalSize = new THREE.Vector2();
-            renderer.getSize(originalSize);
-            
-            // Resize to target
-            renderer.setSize(width, height);
-            
-            // Update Camera for target aspect ratio
-            const aspect = width / height;
-            const frustum = 2; // Keep scale consistent
-            camera.left = -frustum * aspect;
-            camera.right = frustum * aspect;
-            camera.top = frustum;
-            camera.bottom = -frustum;
-            camera.updateProjectionMatrix();
-
-            // Render high res frame
-            renderer.render(scene, camera);
-
-            // Capture
-            const dataURL = renderer.domElement.toDataURL('image/png');
-            
-            // Create download
-            const link = document.createElement('a');
-            link.download = `CONSTELLATION_EXPORT_${width}x${height}_${Date.now()}.png`;
-            link.href = dataURL;
-            link.click();
-
-            // Restore original state
-            renderer.setSize(originalSize.width, originalSize.height);
-            onResize(); // Resets camera to window aspect
-            renderer.render(scene, camera); // Render back to screen
-        }
-
-        // Theme Function
-        window.setTheme = function(fg, dim) {
-            currentFG = fg;
-            currentDim = dim;
-            
-            // CSS Vars
-            document.documentElement.style.setProperty('--fg', fg);
-            document.documentElement.style.setProperty('--dim', dim);
-            
-            // Three JS Update
-            if(scopeMaterial) scopeMaterial.color.set(fg);
-            
-            // Re-render immediately if paused to show color change
-            if(audioElement.paused && isRunning) renderer.render(scene, camera);
         }
 
         initGraphics();
@@ -473,12 +561,11 @@
             );
             camera.position.z = 10;
 
-            renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
+            renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.setPixelRatio(window.devicePixelRatio);
             container.appendChild(renderer.domElement);
 
-            // --- VECTORSCOPE GEOMETRY ---
             const positions = new Float32Array(SAMPLES * 3);
             scopeGeometry = new THREE.BufferGeometry();
             scopeGeometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -495,13 +582,12 @@
             scopePoints = new THREE.Points(scopeGeometry, scopeMaterial);
             scene.add(scopePoints);
 
-            // --- GRID ---
             const gridHelper = new THREE.GridHelper(4, 4, 0x111111, 0x111111);
             gridHelper.rotation.x = Math.PI / 2;
             scene.add(gridHelper);
             
             window.addEventListener('resize', onResize);
-            onResize(); // Init canvas sizes
+            onResize();
         }
 
         function initAudio() {
@@ -510,40 +596,31 @@
         }
 
         function setupNodes(source, isMicrophone = false) {
-            // Disconnect old source
-            if(sourceNode) sourceNode.disconnect();
+            if(sourceNode && sourceNode !== source) {
+                try { sourceNode.disconnect(); } catch(e){}
+            }
             
             sourceNode = source;
             isMic = isMicrophone;
 
-            // Chain: Source -> Splitter -> (Analysers L/R)
-            //               -> AnalyserSpectrum -> Destination
-            
             const splitter = audioContext.createChannelSplitter(2);
             analyserL = audioContext.createAnalyser();
             analyserR = audioContext.createAnalyser();
             analyserSpectrum = audioContext.createAnalyser();
 
-            // Vectorscope Setup
             analyserL.fftSize = SAMPLES * 2;
             analyserR.fftSize = SAMPLES * 2;
-            
-            // Spectrum Setup
             analyserSpectrum.fftSize = 2048; 
             analyserSpectrum.smoothingTimeConstant = 0.85;
 
-            // Routing
             source.connect(splitter);
             splitter.connect(analyserL, 0);
             splitter.connect(analyserR, 1);
+            source.connect(analyserSpectrum); 
             
-            source.connect(analyserSpectrum); // Mix for spectrum
-            
-            // Only connect to destination if it's the file player (Microphone causes feedback loop)
             if (!isMicrophone) {
-                // If it's MediaElementSource, it might need connecting to destination to hear it,
-                // depending on browser impl, but usually yes.
-                source.connect(audioContext.destination);
+                // Ensure we don't double connect if reusing element source
+                try { source.connect(audioContext.destination); } catch(e) {}
                 document.getElementById('transport-panel').classList.add('active');
             } else {
                 document.getElementById('transport-panel').classList.remove('active');
@@ -555,51 +632,57 @@
             
             isRunning = true;
             document.getElementById('drop-overlay').classList.add('hidden');
-            
-            // Reset Pause State UI
             setPauseState(false);
         }
 
         function handleFile(file) {
             initAudio();
             
-            // Revoke old URL to free memory
+            // If mic is active, deactivate it first
+            if(isMic && micStream) {
+                micStream.getTracks().forEach(t => t.stop());
+                micStream = null;
+                isMic = false;
+                const btnMic = document.getElementById('btn-mic');
+                btnMic.innerText = "ACTIVATE MIC";
+                btnMic.style.background = "";
+                btnMic.style.color = "";
+            }
+
             if (audioElement.src) URL.revokeObjectURL(audioElement.src);
 
             const url = URL.createObjectURL(file);
             audioElement.src = url;
-            
-            // Update Track Info
             document.getElementById('track-name').innerText = file.name.toUpperCase();
 
-            // When metadata loads, display duration
             audioElement.onloadedmetadata = () => {
                 document.getElementById('time-total').innerText = formatTime(audioElement.duration);
             };
 
-            // Create MediaElementSource if not already created
-            // Note: We can only create ONE MediaElementSource per element. 
-            // We reuse the element, so we reuse the source if it exists?
-            // Actually, best practice is to create the source once globally, but since 
-            // initAudio might be called later, we need to check.
-            
             if (!audioElement._sourceNode) {
                  audioElement._sourceNode = audioContext.createMediaElementSource(audioElement);
             }
             
             setupNodes(audioElement._sourceNode, false);
-            
             audioElement.play().catch(e => console.error("Play error:", e));
         }
 
         function activateMic() {
             initAudio();
-            audioElement.pause(); // Stop file playback
+            audioElement.pause(); 
             
             navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+                micStream = stream; // Store for cleanup
                 const src = audioContext.createMediaStreamSource(stream);
                 setupNodes(src, true);
+                
+                // UI Update
                 document.getElementById('track-name').innerText = "LIVE INPUT";
+                const btnMic = document.getElementById('btn-mic');
+                btnMic.innerText = "DEACTIVATE MIC";
+                btnMic.style.background = "var(--alert)";
+                btnMic.style.color = "#fff";
+                
                 document.getElementById('time-current').innerText = "--:--";
                 document.getElementById('time-total').innerText = "--:--";
             }).catch(e => {
@@ -610,7 +693,6 @@
         function setupInteraction() {
             const drop = document.getElementById('drop-overlay');
             const fileIn = document.getElementById('file-input');
-            const btnMic = document.getElementById('btn-mic');
             const scrubBar = document.getElementById('scrub-bar');
 
             drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.background = '#002200'; });
@@ -621,22 +703,14 @@
                 if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
             });
             fileIn.addEventListener('change', e => { if(e.target.files.length) handleFile(e.target.files[0]); });
-            btnMic.addEventListener('click', activateMic);
 
-            // Scrubbing Logic
             scrubBar.addEventListener('mousedown', e => {
                 if(!audioElement.duration || isMic) return;
                 isSeeking = true;
                 seek(e);
             });
-            
-            window.addEventListener('mousemove', e => {
-                if(isSeeking) seek(e);
-            });
-            
-            window.addEventListener('mouseup', () => {
-                isSeeking = false;
-            });
+            window.addEventListener('mousemove', e => { if(isSeeking) seek(e); });
+            window.addEventListener('mouseup', () => { isSeeking = false; });
         }
 
         function seek(e) {
@@ -644,20 +718,13 @@
             const rect = scrubBar.getBoundingClientRect();
             let x = e.clientX - rect.left;
             x = Math.max(0, Math.min(x, rect.width));
-            
             const pct = x / rect.width;
             
-            // Visual Update Immediate
             document.getElementById('scrub-head').style.left = (pct * 100) + "%";
             document.getElementById('scrub-fill').style.width = (pct * 100) + "%";
             
-            // Audio Update
-            if (audioElement.duration) {
-                audioElement.currentTime = pct * audioElement.duration;
-            }
+            if (audioElement.duration) audioElement.currentTime = pct * audioElement.duration;
         }
-
-        // --- MATH & ANALYSIS ---
 
         function formatTime(seconds) {
             if(!seconds || isNaN(seconds)) return "00:00.00";
@@ -667,9 +734,7 @@
             return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
         }
 
-        function toDB(gain) {
-            return 20 * Math.log10(Math.max(gain, 0.00001));
-        }
+        function toDB(gain) { return 20 * Math.log10(Math.max(gain, 0.00001)); }
 
         function calculateMetrics(lData, rData) {
             let sumL = 0, sumR = 0;
@@ -679,13 +744,7 @@
             for(let i=0; i<lData.length; i++) {
                 const l = lData[i];
                 const r = rData[i];
-                
-                sumL += l * l;
-                sumR += r * r;
-                sumLR += l * r;
-                sumL2 += l * l;
-                sumR2 += r * r;
-
+                sumL += l * l; sumR += r * r; sumLR += l * r; sumL2 += l * l; sumR2 += r * r;
                 if(Math.abs(l) > peakL) peakL = Math.abs(l);
                 if(Math.abs(r) > peakR) peakR = Math.abs(r);
             }
@@ -693,21 +752,16 @@
             const rmsL = Math.sqrt(sumL / lData.length);
             const rmsR = Math.sqrt(sumR / rData.length);
             const rmsTotal = (rmsL + rmsR) / 2;
-
             const denom = Math.sqrt(sumL2 * sumR2);
             let correlation = denom > 0.00001 ? sumLR / denom : 0;
-            correlation = Math.max(-1, Math.min(1, correlation));
-
-            return { rmsL, rmsR, rmsTotal, correlation, peakL, peakR };
+            return { rmsL, rmsR, rmsTotal, correlation: Math.max(-1, Math.min(1, correlation)), peakL, peakR };
         }
 
         function drawSpectrum() {
             if(!analyserSpectrum) return;
-            
             const w = specCanvas.width;
             const h = specCanvas.height;
             specCtx.clearRect(0, 0, w, h);
-
             analyserSpectrum.getByteFrequencyData(freqData);
             
             specCtx.beginPath();
@@ -717,22 +771,17 @@
             
             const sliceWidth = w * 1.0 / freqData.length;
             let x = 0;
-
             specCtx.moveTo(0, h);
-            
-            // Draw filled shape
             for(let i = 0; i < freqData.length; i++) {
                 const v = freqData[i] / 255.0;
                 const y = h - (v * h);
                 specCtx.lineTo(x, y);
                 x += sliceWidth;
             }
-            
             specCtx.lineTo(w, h);
             specCtx.fill();
             specCtx.stroke();
             
-            // Grid lines for spectrum
             specCtx.fillStyle = currentFG;
             specCtx.font = "10px JetBrains Mono";
             specCtx.globalAlpha = 0.5;
@@ -741,35 +790,23 @@
             specCtx.globalAlpha = 1.0;
         }
 
-        // --- MAIN LOOP ---
-
         function animate() {
             requestAnimationFrame(animate);
-
             if (isRunning && analyserL && analyserR) {
-                // If using file player, update UI time
                 if (!isMic && !isSeeking && audioElement.duration) {
                     const pct = (audioElement.currentTime / audioElement.duration) * 100;
                     document.getElementById('scrub-head').style.left = pct + "%";
                     document.getElementById('scrub-fill').style.width = pct + "%";
                     document.getElementById('time-current').innerText = formatTime(audioElement.currentTime);
-                    
-                    if(audioElement.paused) {
-                        // Keep loop running for visuals if needed, or just skip
-                        // For a vectorscope, we usually want it to freeze or fade.
-                        // But since we are using MediaElement, analyser stops receiving data when paused usually.
-                    }
                 }
 
                 analyserL.getFloatTimeDomainData(dataL);
                 analyserR.getFloatTimeDomainData(dataR);
 
-                // 1. UPDATE VECTORSCOPE
                 const positions = scopeGeometry.attributes.position.array;
                 for (let i = 0; i < SAMPLES; i++) {
                     const l = dataL[i];
                     const r = dataR[i];
-                    // Rotate 45deg: X = (L-R), Y = (L+R)
                     const x = (l - r) * 1.0; 
                     const y = (l + r) * 1.0; 
                     positions[i * 3] = x;
@@ -778,28 +815,20 @@
                 }
                 scopeGeometry.attributes.position.needsUpdate = true;
 
-                // 2. UPDATE UI METRICS
                 const m = calculateMetrics(dataL, dataR);
-
-                // DB
-                const db = toDB(m.rmsTotal).toFixed(1);
-                document.getElementById('val-db').innerText = db + " dB";
-
-                // Bars
+                document.getElementById('val-db').innerText = toDB(m.rmsTotal).toFixed(1) + " dB";
+                
                 const mapDB = (val) => Math.min(100, Math.max(0, (toDB(val) + 60) * (100/60)));
                 document.getElementById('bar-l').style.width = mapDB(m.rmsL) + "%";
                 document.getElementById('bar-r').style.width = mapDB(m.rmsR) + "%";
 
-                // Clipping
                 const clipEl = document.getElementById('clip-led');
                 if (m.peakL >= 0.99 || m.peakR >= 0.99) {
-                    clipEl.classList.add('active');
-                    clipEl.style.opacity = "1";
+                    clipEl.classList.add('active'); 
                 } else {
                     clipEl.classList.remove('active');
                 }
 
-                // Correlation
                 const corrPercent = ((m.correlation + 1) / 2) * 100;
                 document.getElementById('corr-marker').style.left = corrPercent + "%";
                 document.getElementById('val-corr').innerText = (m.correlation > 0 ? "+" : "") + m.correlation.toFixed(2);
@@ -812,35 +841,25 @@
                     document.getElementById('corr-marker').style.background = '#fff';
                 }
 
-                // Width
-                const width = Math.max(0, (1 - m.correlation) * 50).toFixed(0);
-                document.getElementById('val-width').innerText = width + "%";
-
-                // 3. DRAW SPECTRUM
+                document.getElementById('val-width').innerText = Math.max(0, (1 - m.correlation) * 50).toFixed(0) + "%";
                 drawSpectrum();
             }
-
             renderer.render(scene, camera);
         }
 
         function onResize() {
             const aspect = window.innerWidth / window.innerHeight;
             const frustum = 2;
-            camera.left = -frustum * aspect;
-            camera.right = frustum * aspect;
-            camera.top = frustum;
-            camera.bottom = -frustum;
+            camera.left = -frustum * aspect; camera.right = frustum * aspect;
+            camera.top = frustum; camera.bottom = -frustum;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
-
-            // Resize Spectrum Canvas
             const container = document.getElementById('spectrum-container');
             if(container) {
                 specCanvas.width = container.clientWidth;
                 specCanvas.height = container.clientHeight;
             }
         }
-
     </script>
 </body>
 </html>
