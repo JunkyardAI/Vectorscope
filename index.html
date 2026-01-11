@@ -81,10 +81,55 @@
             justify-content: center;
             pointer-events: none;
             opacity: 0.8;
+            position: relative;
         }
         #spectrum-canvas {
             width: 100%;
             height: 100%;
+        }
+
+        /* TRANSPORT CONTROLS (NEW) */
+        #transport-panel {
+            grid-column: 2;
+            grid-row: 2;
+            align-self: end;
+            margin-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-end;
+            pointer-events: auto;
+            opacity: 0; /* Hidden until active */
+            transition: opacity 0.5s;
+        }
+        #transport-panel.active { opacity: 1; }
+
+        .scrub-container {
+            width: 100%;
+            max-width: 600px;
+            display: flex; flex-direction: column; gap: 5px;
+        }
+        .scrub-bar {
+            width: 100%; height: 20px;
+            background: rgba(0, 20, 0, 0.5);
+            border: 1px solid var(--dim);
+            position: relative;
+            cursor: crosshair;
+            display: flex; align-items: center;
+        }
+        .scrub-bar:hover { border-color: var(--fg); }
+        .scrub-fill {
+            height: 100%; background: var(--dim);
+            width: 0%; pointer-events: none;
+        }
+        .scrub-head {
+            width: 2px; height: 100%; background: var(--fg);
+            position: absolute; left: 0%; pointer-events: none;
+            box-shadow: 0 0 10px var(--fg);
+        }
+        .time-display {
+            display: flex; justify-content: space-between;
+            font-size: 10px; color: var(--fg);
         }
 
         /* Color Picker */
@@ -220,6 +265,21 @@
             </div>
         </div>
 
+        <!-- CENTER: TRANSPORT (NEW) -->
+        <div id="transport-panel">
+            <div class="scrub-container">
+                <div class="time-display">
+                    <span id="time-current">00:00.00</span>
+                    <span id="track-name" style="opacity:0.5; max-width: 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">TRACK SCANNING...</span>
+                    <span id="time-total">00:00.00</span>
+                </div>
+                <div class="scrub-bar" id="scrub-bar">
+                    <div class="scrub-fill" id="scrub-fill"></div>
+                    <div class="scrub-head" id="scrub-head"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- EXPORT PANEL (Bottom Right, visible on pause) -->
         <div id="export-panel" class="meter-container">
             <div class="label">EXPORT SNAPSHOT</div>
@@ -263,6 +323,9 @@
         <input type="file" id="file-input" accept="audio/*" style="display:none;">
     </div>
 
+    <!-- Hidden Audio Element for Streaming/Seeking -->
+    <audio id="audio-element" loop crossorigin="anonymous"></audio>
+
     <script type="module">
         import * as THREE from 'three';
 
@@ -277,7 +340,11 @@
         let dataL, dataR;
         let freqData;
         let isRunning = false;
-        let isPaused = false;
+        let isMic = false;
+        
+        // Player Globals
+        const audioElement = document.getElementById('audio-element');
+        let isSeeking = false;
         
         // Spectrum Canvas
         const specCanvas = document.getElementById('spectrum-canvas');
@@ -291,23 +358,47 @@
         window.togglePause = function() {
             if(!audioContext) return;
             const exportPanel = document.getElementById('export-panel');
+            const btn = document.getElementById('btn-pause');
             
-            if(audioContext.state === 'running') {
-                audioContext.suspend();
-                isPaused = true;
-                document.getElementById('btn-pause').style.background = 'var(--fg)';
-                document.getElementById('btn-pause').style.color = 'var(--bg)';
-                document.getElementById('btn-pause').innerText = "RESUME";
-                exportPanel.classList.add('visible');
-            } else if(audioContext.state === 'suspended') {
-                audioContext.resume();
-                isPaused = false;
-                document.getElementById('btn-pause').style.background = '';
-                document.getElementById('btn-pause').style.color = 'var(--fg)';
-                document.getElementById('btn-pause').innerText = "PAUSE";
-                exportPanel.classList.remove('visible');
+            // If using Microphone, we suspend context. 
+            // If using File, we pause Element.
+            
+            if (isMic) {
+                if(audioContext.state === 'running') {
+                    audioContext.suspend();
+                    setPauseState(true);
+                } else {
+                    audioContext.resume();
+                    setPauseState(false);
+                }
+            } else {
+                // File mode
+                if (audioElement.paused) {
+                    audioElement.play();
+                    setPauseState(false);
+                } else {
+                    audioElement.pause();
+                    setPauseState(true);
+                }
             }
         };
+
+        function setPauseState(paused) {
+            const exportPanel = document.getElementById('export-panel');
+            const btn = document.getElementById('btn-pause');
+            
+            if (paused) {
+                btn.style.background = 'var(--fg)';
+                btn.style.color = 'var(--bg)';
+                btn.innerText = "RESUME";
+                exportPanel.classList.add('visible');
+            } else {
+                btn.style.background = '';
+                btn.style.color = 'var(--fg)';
+                btn.innerText = "PAUSE";
+                exportPanel.classList.remove('visible');
+            }
+        }
 
         window.exportSnapshot = function(width, height) {
             if (!renderer) return;
@@ -359,7 +450,7 @@
             if(scopeMaterial) scopeMaterial.color.set(fg);
             
             // Re-render immediately if paused to show color change
-            if(isPaused) renderer.render(scene, camera);
+            if(audioElement.paused && isRunning) renderer.render(scene, camera);
         }
 
         initGraphics();
@@ -405,8 +496,6 @@
             scene.add(scopePoints);
 
             // --- GRID ---
-            // We use standard line segments for grid so we can recolor them easily if needed, 
-            // but for now keeping them static dark green is fine or we can link them to theme
             const gridHelper = new THREE.GridHelper(4, 4, 0x111111, 0x111111);
             gridHelper.rotation.x = Math.PI / 2;
             scene.add(gridHelper);
@@ -420,9 +509,12 @@
             if (audioContext.state === 'suspended') audioContext.resume();
         }
 
-        function setupNodes(source) {
+        function setupNodes(source, isMicrophone = false) {
+            // Disconnect old source
             if(sourceNode) sourceNode.disconnect();
+            
             sourceNode = source;
+            isMic = isMicrophone;
 
             // Chain: Source -> Splitter -> (Analysers L/R)
             //               -> AnalyserSpectrum -> Destination
@@ -447,8 +539,14 @@
             
             source.connect(analyserSpectrum); // Mix for spectrum
             
-            if (source instanceof AudioBufferSourceNode) {
+            // Only connect to destination if it's the file player (Microphone causes feedback loop)
+            if (!isMicrophone) {
+                // If it's MediaElementSource, it might need connecting to destination to hear it,
+                // depending on browser impl, but usually yes.
                 source.connect(audioContext.destination);
+                document.getElementById('transport-panel').classList.add('active');
+            } else {
+                document.getElementById('transport-panel').classList.remove('active');
             }
 
             dataL = new Float32Array(SAMPLES);
@@ -457,29 +555,55 @@
             
             isRunning = true;
             document.getElementById('drop-overlay').classList.add('hidden');
+            
+            // Reset Pause State UI
+            setPauseState(false);
         }
 
         function handleFile(file) {
             initAudio();
-            const reader = new FileReader();
-            reader.onload = e => {
-                audioContext.decodeAudioData(e.target.result, buffer => {
-                    if(sourceNode) { try{ sourceNode.stop(); } catch(e){} }
-                    const src = audioContext.createBufferSource();
-                    src.buffer = buffer;
-                    src.loop = true;
-                    src.start(0);
-                    setupNodes(src);
-                });
+            
+            // Revoke old URL to free memory
+            if (audioElement.src) URL.revokeObjectURL(audioElement.src);
+
+            const url = URL.createObjectURL(file);
+            audioElement.src = url;
+            
+            // Update Track Info
+            document.getElementById('track-name').innerText = file.name.toUpperCase();
+
+            // When metadata loads, display duration
+            audioElement.onloadedmetadata = () => {
+                document.getElementById('time-total').innerText = formatTime(audioElement.duration);
             };
-            reader.readAsArrayBuffer(file);
+
+            // Create MediaElementSource if not already created
+            // Note: We can only create ONE MediaElementSource per element. 
+            // We reuse the element, so we reuse the source if it exists?
+            // Actually, best practice is to create the source once globally, but since 
+            // initAudio might be called later, we need to check.
+            
+            if (!audioElement._sourceNode) {
+                 audioElement._sourceNode = audioContext.createMediaElementSource(audioElement);
+            }
+            
+            setupNodes(audioElement._sourceNode, false);
+            
+            audioElement.play().catch(e => console.error("Play error:", e));
         }
 
         function activateMic() {
             initAudio();
+            audioElement.pause(); // Stop file playback
+            
             navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
                 const src = audioContext.createMediaStreamSource(stream);
-                setupNodes(src);
+                setupNodes(src, true);
+                document.getElementById('track-name').innerText = "LIVE INPUT";
+                document.getElementById('time-current').innerText = "--:--";
+                document.getElementById('time-total').innerText = "--:--";
+            }).catch(e => {
+                alert("Microphone access denied or error.");
             });
         }
 
@@ -487,18 +611,61 @@
             const drop = document.getElementById('drop-overlay');
             const fileIn = document.getElementById('file-input');
             const btnMic = document.getElementById('btn-mic');
+            const scrubBar = document.getElementById('scrub-bar');
 
             drop.addEventListener('dragover', e => { e.preventDefault(); drop.style.background = '#002200'; });
             drop.addEventListener('dragleave', e => { e.preventDefault(); drop.style.background = 'rgba(0,0,0,0.85)'; });
             drop.addEventListener('drop', e => {
                 e.preventDefault();
+                drop.style.background = 'rgba(0,0,0,0.85)';
                 if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
             });
             fileIn.addEventListener('change', e => { if(e.target.files.length) handleFile(e.target.files[0]); });
             btnMic.addEventListener('click', activateMic);
+
+            // Scrubbing Logic
+            scrubBar.addEventListener('mousedown', e => {
+                if(!audioElement.duration || isMic) return;
+                isSeeking = true;
+                seek(e);
+            });
+            
+            window.addEventListener('mousemove', e => {
+                if(isSeeking) seek(e);
+            });
+            
+            window.addEventListener('mouseup', () => {
+                isSeeking = false;
+            });
+        }
+
+        function seek(e) {
+            const scrubBar = document.getElementById('scrub-bar');
+            const rect = scrubBar.getBoundingClientRect();
+            let x = e.clientX - rect.left;
+            x = Math.max(0, Math.min(x, rect.width));
+            
+            const pct = x / rect.width;
+            
+            // Visual Update Immediate
+            document.getElementById('scrub-head').style.left = (pct * 100) + "%";
+            document.getElementById('scrub-fill').style.width = (pct * 100) + "%";
+            
+            // Audio Update
+            if (audioElement.duration) {
+                audioElement.currentTime = pct * audioElement.duration;
+            }
         }
 
         // --- MATH & ANALYSIS ---
+
+        function formatTime(seconds) {
+            if(!seconds || isNaN(seconds)) return "00:00.00";
+            const m = Math.floor(seconds / 60);
+            const s = Math.floor(seconds % 60);
+            const ms = Math.floor((seconds % 1) * 100);
+            return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}.${ms.toString().padStart(2, '0')}`;
+        }
 
         function toDB(gain) {
             return 20 * Math.log10(Math.max(gain, 0.00001));
@@ -557,9 +724,6 @@
             for(let i = 0; i < freqData.length; i++) {
                 const v = freqData[i] / 255.0;
                 const y = h - (v * h);
-                
-                // Logarithmic x-axis approximation for better music viz (simple version)
-                // Linear is actually fine for standard analysis views
                 specCtx.lineTo(x, y);
                 x += sliceWidth;
             }
@@ -572,8 +736,6 @@
             specCtx.fillStyle = currentFG;
             specCtx.font = "10px JetBrains Mono";
             specCtx.globalAlpha = 0.5;
-            // 0Hz is left, Nyquist is right (usually 22050Hz)
-            // Simple markers
             specCtx.fillText("20Hz", 10, h - 5);
             specCtx.fillText("20kHz", w - 40, h - 5);
             specCtx.globalAlpha = 1.0;
@@ -584,7 +746,21 @@
         function animate() {
             requestAnimationFrame(animate);
 
-            if (isRunning && !isPaused && analyserL && analyserR) {
+            if (isRunning && analyserL && analyserR) {
+                // If using file player, update UI time
+                if (!isMic && !isSeeking && audioElement.duration) {
+                    const pct = (audioElement.currentTime / audioElement.duration) * 100;
+                    document.getElementById('scrub-head').style.left = pct + "%";
+                    document.getElementById('scrub-fill').style.width = pct + "%";
+                    document.getElementById('time-current').innerText = formatTime(audioElement.currentTime);
+                    
+                    if(audioElement.paused) {
+                        // Keep loop running for visuals if needed, or just skip
+                        // For a vectorscope, we usually want it to freeze or fade.
+                        // But since we are using MediaElement, analyser stops receiving data when paused usually.
+                    }
+                }
+
                 analyserL.getFloatTimeDomainData(dataL);
                 analyserR.getFloatTimeDomainData(dataR);
 
@@ -618,16 +794,8 @@
                 const clipEl = document.getElementById('clip-led');
                 if (m.peakL >= 0.99 || m.peakR >= 0.99) {
                     clipEl.classList.add('active');
-                    // Auto remove class after a short delay is tricky in a loop, 
-                    // usually better to just set it based on current frame, 
-                    // but we want it to 'stick' slightly so it's visible.
-                    // Simple approach: set it, CSS transition handles fade in, 
-                    // we remove it if not clipping? No, we want a hold.
-                    // Let's just set it true here, and use a timeout to clear it if we implement a hold system.
-                    // Simple frame-based:
                     clipEl.style.opacity = "1";
                 } else {
-                    // Fade out
                     clipEl.classList.remove('active');
                 }
 
