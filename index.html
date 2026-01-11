@@ -431,12 +431,17 @@
 
         // --- CONFIG ---
         const SAMPLES = 4096; 
-        const SAFE_MEM_LIMIT_MB = 250; // Conservative limit for session files
+        
+        // --- MEMORY & SAFETY CONFIG ---
+        const MAX_SESSION_FILES = 5;
+        const MAX_SESSION_MB = 200; // Conservative limit for stability
+        const SAFE_MEM_LIMIT_MB = 250; 
         
         // --- GLOBALS ---
         let scene, camera, renderer;
         let scopeGeometry, scopePoints, scopeMaterial;
         let audioContext, sourceNode, micStream;
+        let splitterNode; // Track splitter to disconnect
         let analyserL, analyserR, analyserSpectrum;
         let dataL, dataR;
         let freqData;
@@ -458,6 +463,24 @@
         // Theme Globals
         let currentFG = '#00ff00';
         let currentDim = '#004400';
+
+        // --- LIFECYCLE SAFETY ---
+        // 1. Page Visibility: Suspend Audio Context when tab is hidden to save battery/CPU
+        document.addEventListener("visibilitychange", () => {
+            if (audioContext && audioContext.state !== 'closed') {
+                if (document.hidden) {
+                    audioContext.suspend();
+                } else if (!document.hidden && isRunning) {
+                    audioContext.resume();
+                }
+            }
+        });
+
+        // 2. Before Unload: Last ditch effort to cleanup URLs
+        window.addEventListener('beforeunload', () => {
+            if (audioElement.src) URL.revokeObjectURL(audioElement.src);
+            // If we attached URLs to history items in the future, revoke them here too.
+        });
 
         // --- EXPORTED FUNCTIONS ---
 
@@ -667,15 +690,29 @@
             if (audioContext.state === 'suspended') audioContext.resume();
         }
 
+        // --- AUDIO NODE HYGIENE ---
         function setupNodes(source, isMicrophone = false) {
-            if(sourceNode && sourceNode !== source) {
+            // 1. Clean Disconnection of Previous Nodes
+            if (sourceNode && sourceNode !== source) {
                 try { sourceNode.disconnect(); } catch(e){}
+            }
+            if (splitterNode) {
+                try { splitterNode.disconnect(); } catch(e){}
+            }
+            if (analyserL) {
+                try { analyserL.disconnect(); } catch(e){}
+            }
+            if (analyserR) {
+                try { analyserR.disconnect(); } catch(e){}
+            }
+            if (analyserSpectrum) {
+                try { analyserSpectrum.disconnect(); } catch(e){}
             }
             
             sourceNode = source;
             isMic = isMicrophone;
 
-            const splitter = audioContext.createChannelSplitter(2);
+            splitterNode = audioContext.createChannelSplitter(2); // Assign to global
             analyserL = audioContext.createAnalyser();
             analyserR = audioContext.createAnalyser();
             analyserSpectrum = audioContext.createAnalyser();
@@ -685,9 +722,9 @@
             analyserSpectrum.fftSize = 2048; 
             analyserSpectrum.smoothingTimeConstant = 0.85;
 
-            source.connect(splitter);
-            splitter.connect(analyserL, 0);
-            splitter.connect(analyserR, 1);
+            source.connect(splitterNode);
+            splitterNode.connect(analyserL, 0);
+            splitterNode.connect(analyserR, 1);
             source.connect(analyserSpectrum); 
             
             if (!isMicrophone) {
@@ -723,6 +760,35 @@
             if(pct > 90) bar.style.backgroundColor = "var(--alert)";
             else if(pct > 60) bar.style.backgroundColor = "var(--warn)";
             else bar.style.backgroundColor = "var(--fg)";
+            
+            return { totalBytes, mb };
+        }
+
+        // --- DYNAMIC MEMORY MANAGER ---
+        function pruneSession() {
+            // Loop to check constraints
+            let safetyLoop = 0;
+            while (safetyLoop < 20) { // Prevent infinite loop
+                const mem = calculateMemory();
+                const totalMB = parseFloat(mem.mb);
+                
+                const countCondition = sessionHistory.length > MAX_SESSION_FILES;
+                const sizeCondition = totalMB > MAX_SESSION_MB;
+
+                if (countCondition || sizeCondition) {
+                    // Evict oldest (last in array)
+                    if (sessionHistory.length > 0) {
+                        const removed = sessionHistory.pop();
+                        console.log(`[Memory Manager] Pruned: ${removed.name} | Reason: ${countCondition ? 'Count' : 'Size'}`);
+                        // Note: If we stored objectURLs in history, we would revoke them here: URL.revokeObjectURL(removed.objectURL);
+                    } else {
+                        break; // Nothing to remove
+                    }
+                } else {
+                    break; // All good
+                }
+                safetyLoop++;
+            }
         }
 
         function updateHistoryUI() {
@@ -765,8 +831,8 @@
                 sessionHistory = sessionHistory.filter(f => f !== file);
             }
             
-            // Limit history size to 6 items
-            if (sessionHistory.length > 6) sessionHistory.pop();
+            // 3. EXECUTE MEMORY MANAGER (Replaces simple .pop logic)
+            pruneSession();
             
             currentFileObj = file;
             updateHistoryUI();
